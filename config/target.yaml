@@ -1,0 +1,28 @@
+static_transform:
+  translation:
+    x: -21.5
+    y: -0.7
+    z: 1.043
+  rotation:
+    roll: 0.0
+    pitch: 0.0
+    yaw: 0.0
+
+  target_x: -21.5
+  target_y: -0.2
+  target_z: 1.043
+
+# Point cloud refinement parameters
+pointcloud_refinement:
+  search_radius: 2.0              # 搜索半径 (米)
+  use_refinement: true            # 是否启用点云精细化
+  min_points_threshold: 10        # 最小点数阈值
+  pointcloud_topic: "/current_pcd"  # 实时点云话题名
+
+# Manual adjustment parameters
+step_x: 0.07                      # X轴步长
+step_y: 0.07                      # Y轴步长
+step_z: 0.07                      # Z轴步长
+
+# Target ID
+target_id: 8

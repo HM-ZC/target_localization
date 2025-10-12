@@ -1,0 +1,24 @@
+<launch>
+    <rosparam file="$(find radar_vision)/config/target.yaml" command="load"/>
+<!-- mid360驱动 -->
+            <include file="$(find livox_ros_driver2)/launch_ROS1/msg_MID360.launch">
+                <arg name="rviz_enable" value="false"/>
+                <arg name="publish_freq" value="10"/>
+                <arg name="msg_frame_id" value="livox_frame"/>
+            </include>
+<!--     定位+重定位 -->
+
+    <include file="$(find rm_navigation)/launch/lio_launch/mapping_mid360.launch"/>
+<!--     <include file="$(find rm_navigation)/launch/lc_launch/aloam_mid360.launch"/> -->
+
+<!-- 坐标换算 -->
+
+    <node name="radar_vision" pkg="radar_vision" type="radar_vision_node" output="screen">
+
+    </node>
+
+
+<!--              <include file="$(find rm_navigation)/launch/lio_launch/mapping_mid360.launch"/>  -->
+<!--             <include file="$(find fast_lio)/launch/mapping_mid360.launch"/> -->
+
+</launch>
