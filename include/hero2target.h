@@ -32,6 +32,14 @@
 #include <pcl/kdtree/kdtree.h>
 #include <pcl/segmentation/extract_clusters.h>
 #include "radar_vision/TrackData.h"
+#include <gtsam/nonlinear/ISAM2.h>
+#include <gtsam/slam/BetweenFactor.h>
+#include <gtsam/slam/PriorFactor.h>
+#include <gtsam/geometry/Pose3.h>
+#include <gtsam/inference/Symbol.h>
+#include <gtsam/nonlinear/ISAM2.h>
+#include <gtsam/nonlinear/NonlinearFactorGraph.h>
+#include <gtsam/nonlinear/Values.h>
 
 namespace radar_vision{
     class Radar_vision {
@@ -96,6 +104,32 @@ namespace radar_vision{
 
         geometry_msgs::Point current_target_position_;
         std::mutex target_mutex_;
+
+        // ---- GTSAM相关 ----
+        gtsam::ISAM2 isam2_;
+        gtsam::NonlinearFactorGraph graph_;
+        gtsam::Values initial_;
+        std::mutex gtsam_mutex_;
+        size_t gtsam_index_ = 0;
+        bool gtsam_inited_ = false;
+        bool gtsam_has_estimate_ = false;
+        bool use_gtsam_optimization_ = true;
+
+        geometry_msgs::Point gtsam_estimated_point_; // 最新估计的目标点（map系）
+
+        // 噪声（可从参数服务器读取）
+        double meas_sigma_xy_ = 0.10;
+        double meas_sigma_z_  = 0.10;
+        double smooth_sigma_xy_ = 0.05;
+        double smooth_sigma_z_  = 0.05;
+        double prior_sigma_xy_  = 0.20;
+        double prior_sigma_z_   = 0.20;
+        double orient_sigma_loose_ = 100.0; // 很松的姿态噪声（弧度）
+
+        // ---- GTSAM 方法 ----
+        void initializeGtsam();
+        void resetGtsam(const geometry_msgs::Point& p0);
+        void addPointMeasurementToGtsam(const geometry_msgs::Point& p, const ros::Time& stamp);
     };
 }
 

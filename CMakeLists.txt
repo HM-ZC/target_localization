@@ -90,25 +90,25 @@ project(radar_vision)
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
-    dynamic_reconfigure
-    #rm_common
-    #rm_msgs
-    roscpp
-    tf2_eigen
-    tf2_ros
-    tf
-    visualization_msgs
-    tf2_geometry_msgs
-    std_msgs
-    nav_msgs
-    geometry_msgs
-    tf2
-    message_generation
-    pcl_ros
-    pcl_conversions
-    sensor_msgs
+        dynamic_reconfigure
+        #rm_common
+        #rm_msgs
+        roscpp
+        tf2_eigen
+        tf2_ros
+        tf
+        visualization_msgs
+        tf2_geometry_msgs
+        std_msgs
+        nav_msgs
+        geometry_msgs
+        tf2
+        message_generation
+        pcl_ros
+        pcl_conversions
+        sensor_msgs
 )
-
+find_package(GTSAM REQUIRED)
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -145,9 +145,9 @@ find_package(catkin REQUIRED COMPONENTS
 
 ## Generate messages in the 'msg' folder
 add_message_files(
-   FILES
+        FILES
         TrackData.msg
- )
+)
 
 ## Generate services in the 'srv' folder
 # add_service_files(
@@ -164,11 +164,11 @@ add_message_files(
 # )
 
 ## Generate added messages and services with any dependencies listed here
- generate_messages(
-   DEPENDENCIES
+generate_messages(
+        DEPENDENCIES
         std_msgs
         geometry_msgs
- )
+)
 
 ################################################
 ## Declare ROS dynamic reconfigure parameters ##
@@ -202,10 +202,10 @@ generate_dynamic_reconfigure_options(
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
-  INCLUDE_DIRS include
-  LIBRARIES radar_vision
-  CATKIN_DEPENDS dynamic_reconfigure rm_common rm_msgs roscpp tf2_eigen tf2_ros visualization_msgs tf2_geometry_msgs message_runtime pcl_ros pcl_conversions sensor_msgs
-  DEPENDS system_lib PCL
+        INCLUDE_DIRS include
+        LIBRARIES radar_vision
+        CATKIN_DEPENDS dynamic_reconfigure rm_common rm_msgs roscpp tf2_eigen tf2_ros visualization_msgs tf2_geometry_msgs message_runtime pcl_ros pcl_conversions sensor_msgs
+        DEPENDS system_lib PCL
 )
 
 ###########
@@ -215,9 +215,9 @@ catkin_package(
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
 include_directories(
-  include
-  ${catkin_INCLUDE_DIRS}
-  ${PCL_INCLUDE_DIRS}
+        include
+        ${catkin_INCLUDE_DIRS}
+        ${PCL_INCLUDE_DIRS}
 )
 
 
@@ -236,7 +236,7 @@ include_directories(
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
 # add_executable(${PROJECT_NAME}_node src/main.cpp src/hero_radar.cpp)
- add_executable(${PROJECT_NAME}_node src/main.cpp src/hero2target.cpp)
+add_executable(${PROJECT_NAME}_node src/main.cpp src/hero2target.cpp)
 add_dependencies(${PROJECT_NAME}_node
         ${PROJECT_NAME}_gencfg
         ${PROJECT_NAME}_generate_messages_cpp
@@ -253,10 +253,11 @@ add_dependencies(${PROJECT_NAME}_node
 # add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Specify libraries to link a library or executable target against
- target_link_libraries(${PROJECT_NAME}_node
-   ${catkin_LIBRARIES}
-   ${PCL_LIBRARIES}
- )
+target_link_libraries(${PROJECT_NAME}_node
+        ${catkin_LIBRARIES}
+        ${PCL_LIBRARIES}
+        gtsam
+)
 
 
 #############
