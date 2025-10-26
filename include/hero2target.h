@@ -40,6 +40,16 @@
 #include <gtsam/nonlinear/ISAM2.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/Values.h>
+#include <pcl/common/centroid.h>
+#include <pcl/filters/crop_box.h>
+#include <pcl/filters/statistical_outlier_removal.h>
+#include <pcl/filters/voxel_grid.h>
+#include <nano_gicp/point_type_nano_gicp.hpp>
+#include <nano_gicp/lsq_registration.hpp>
+#include <nano_gicp/impl/lsq_registration_impl.hpp>
+#include <nano_gicp/nano_gicp.hpp>
+#include <nano_gicp/impl/nano_gicp_impl.hpp>
+#include <visualization_msgs/Marker.h>
 
 namespace radar_vision{
     class Radar_vision {
@@ -49,7 +59,6 @@ namespace radar_vision{
     private:
         void initialize();
         void loadStaticTransform();
-        void tfCallback(const tf2_msgs::TFMessage::ConstPtr& msg);
         void count_y_Callback(const std_msgs::Float32::ConstPtr& msg);
         void count_x_Callback(const std_msgs::Float32::ConstPtr& msg);
         void count_z_Callback(const std_msgs::Float32::ConstPtr& msg);
@@ -61,13 +70,16 @@ namespace radar_vision{
             const geometry_msgs::Point& center,
             double radius);
 
+        geometry_msgs::Point refineTargetWithDBSCANAndNanoGICP(
+            const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
+            const std::string& cloud_frame,
+            const geometry_msgs::Point& center_map,
+            const ros::Time& stamp);
+
         std::shared_ptr<dynamic_reconfigure::Server<radar_vision::targetConfig>> server_ptr_;
         bool dynamic_reconfig_initialized_ = false;
         ros::NodeHandle nh;
 
-        tf2_ros::Buffer tf_buffer_;
-        tf2_ros::TransformListener tf_listener;
-        tf2_ros::TransformBroadcaster tf_broadcaster;
         ros::Subscriber sub_;
         ros::Subscriber sub_count_x_;
         ros::Subscriber sub_count_y_;
@@ -130,6 +142,43 @@ namespace radar_vision{
         void initializeGtsam();
         void resetGtsam(const geometry_msgs::Point& p0);
         void addPointMeasurementToGtsam(const geometry_msgs::Point& p, const ros::Time& stamp);
+
+        // ROI / 预处理
+        double roi_radius_{2.5};
+        double voxel_leaf_{0.05};
+        bool use_sor_{true};
+        int sor_mean_k_{20};
+        double sor_stddev_mul_{1.0};
+
+        // DBSCAN
+        double dbscan_eps_{0.25};      // m
+        int dbscan_min_pts_{20};       // core点阈值
+        int cluster_min_size_{30};     // 过滤小簇
+        int cluster_max_size_{50000};
+
+        int ng_threads_{4};
+        int ng_corr_rand_{15};
+        int ng_max_iter_{60};
+        int ng_ransac_max_iter_{5};
+        double ng_max_corr_dist_{1.0};
+        double ng_icp_score_thr_{10.0};
+        double ng_trans_eps_{1e-3};
+        double ng_euclid_fit_eps_{1e-3};
+        double ng_ransac_outlier_thr_{1.0};
+
+        // ---- 时序配准（同坐标系）----
+        pcl::PointCloud<pcl::PointXYZ>::Ptr last_cluster_;
+        std::string last_cluster_frame_;
+        ros::Time last_cluster_stamp_;
+        std::mutex last_cluster_mutex_;
+        bool use_temporal_registration_{true};
+        double temporal_max_dt_{0.3};  // seconds
+
+        nano_gicp::NanoGICP<pcl::PointXYZ, pcl::PointXYZ> nano_gicp_;
+
+        ros::Publisher target_marker_pub_;   // 可视化最终目标
+        ros::Publisher best_cluster_pub_;    // 可视化最优簇点云
+
     };
 }
 
@@ -176,4 +225,3 @@ namespace radar_vision{
 //};
 
 #endif //HERO2TAREGT_H
-

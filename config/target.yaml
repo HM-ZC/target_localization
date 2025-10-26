@@ -1,32 +1,33 @@
 static_transform:
   translation:
-    x: -15.5
+    x: -12.5
     y: -0.7
-    z: 1.043
+    z: 10.43
   rotation:
     roll: 0.0
     pitch: 0.0
     yaw: 0.0
 
-  target_x: -15.5
+  target_x: -12.5
   target_y: -0.2
-  target_z: 1.043
+  target_z: 10.43
 
-# Point cloud refinement parameters
+# 点云精细化（主流程采用 ROI+DBSCAN+NanoGICP；search_radius 仅用于备用平均法）
 pointcloud_refinement:
-  search_radius: 20.0              # 搜索半径 (米)
-  use_refinement: true            # 是否启用点云精细化
-  min_points_threshold: 10        # 最小点数阈值
-  pointcloud_topic: "/current_pcd"  # 实时点云话题名
+  search_radius: 1.0               # 备用平均法半径
+  use_refinement: true              # 启用点云精细化
+  min_points_threshold: 10          # 备用平均法最小点数
+  pointcloud_topic: "/current_pcd"  # 点云话题
 
-# Manual adjustment parameters
-step_x: 0.07                      # X轴步长
-step_y: 0.07                      # Y轴步长
-step_z: 0.07                      # Z轴步长
+# 人工微调步长
+step_x: 0.07
+step_y: 0.07
+step_z: 0.07
 
-# Target ID
+# 目标 ID
 target_id: 8
 
+# GTSAM 平滑参数（仅优化平移，姿态噪声很松）
 gtsam:
   use_optimization: true
   meas_sigma_xy: 0.10
@@ -36,3 +37,35 @@ gtsam:
   prior_sigma_xy: 0.20
   prior_sigma_z: 0.20
   orient_sigma_loose: 100.0
+
+# ROI / 预处理
+refine:
+  roi_radius: 2.0        # 裁剪立方体半径（米）
+  voxel_leaf: 0.1       # 体素降采样叶子大小（米）
+  use_sor: true          # 是否启用统计离群点滤波
+  sor_mean_k: 20
+  sor_stddev_mul: 1.0
+
+# DBSCAN 聚类
+clustering:
+  dbscan_eps: 0.3       # 邻域半径（米）
+  dbscan_min_pts: 20     # 最小邻居数
+  min_points: 30         # 簇最小点数
+  max_points: 50000      # 簇最大点数
+
+# NanoGICP 配准（时序配准用）
+nanogicp:
+  threads: 0
+  correspondences: 15
+  max_iter: 32
+  ransac_max_iter: 5
+  max_corr_dist: 1.0
+  icp_score_thr: 1.5
+  trans_eps: 0.001
+  euclid_fit_eps: 0.001
+  ransac_outlier_thr: 1.0
+
+# 时序配准控制
+temporal_registration:
+  enable: true
+  max_dt: 0.3

@@ -1,4 +1,5 @@
 #include "hero2target.h"
+#include "dbscan.hpp"
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <boost/bind.hpp>
 #include <nanoflann.hpp>
@@ -32,8 +33,7 @@ struct PCLPointCloudAdaptor {
 namespace radar_vision {
 
     Radar_vision::Radar_vision(ros::NodeHandle& nh)
-            : nh_("~"),
-              tf_listener(tf_buffer_)
+            : nh_("~")
 
     {
         server_ptr_ = std::make_shared<dynamic_reconfigure::Server<radar_vision::targetConfig>>(nh_);
@@ -50,7 +50,6 @@ namespace radar_vision {
     void Radar_vision::initialize()
     {
         loadStaticTransform();
-        sub_ = nh.subscribe("/tf", 10, &Radar_vision::tfCallback, this);
         sub_count_y_ = nh.subscribe("/rm_manual/target_y/total_target_y", 10, &Radar_vision::count_y_Callback, this);
         sub_count_x_ = nh.subscribe("/rm_manual/target_x/total_target_x", 10, &Radar_vision::count_x_Callback, this);
         sub_count_z_ = nh.subscribe("/rm_manual/target_z/total_target_z", 10, &Radar_vision::count_z_Callback, this);
@@ -60,6 +59,10 @@ namespace radar_vision {
         pub_ = nh.advertise<radar_vision::TrackData>("/odom2target", 10);
         dis_pub_ = nh.advertise<std_msgs::Float32>("/dis_baselink2target", 10);
         z_dis_pub_ = nh.advertise<std_msgs::Float32>("/z_dis_baselink2target", 10);
+
+        target_marker_pub_ = nh.advertise<visualization_msgs::Marker>("/radar_vision/target_marker", 1);
+        best_cluster_pub_  = nh.advertise<sensor_msgs::PointCloud2>("/radar_vision/best_cluster", 1);
+
 
         ROS_INFO("Dynamic reconfigure server initialized!");
         ROS_INFO("PointCloud subscriber initialized for topic: %s", pointcloud_topic_.c_str());
@@ -144,6 +147,44 @@ namespace radar_vision {
         ROS_INFO("  Topic: %s", pointcloud_topic_.c_str());
         ROS_INFO("  Radius: %.2f, Enabled: %s, Min points: %.0f",
                  search_radius_, use_pointcloud_refinement_ ? "true" : "false", min_points_threshold_);
+
+        nh.param("refine/roi_radius", roi_radius_, 2.5);
+        nh.param("refine/voxel_leaf", voxel_leaf_, 0.05);
+        nh.param("refine/use_sor", use_sor_, true);
+        nh.param("refine/sor_mean_k", sor_mean_k_, 20);
+        nh.param("refine/sor_stddev_mul", sor_stddev_mul_, 1.0);
+
+        nh.param("clustering/dbscan_eps", dbscan_eps_, 0.25);
+        nh.param("clustering/dbscan_min_pts", dbscan_min_pts_, 20);
+        nh.param("clustering/min_points", cluster_min_size_, 30);
+        nh.param("clustering/max_points", cluster_max_size_, 50000);
+
+        nh.param("nanogicp/threads", ng_threads_, 4);
+        nh.param("nanogicp/correspondences", ng_corr_rand_, 15);
+        nh.param("nanogicp/max_iter", ng_max_iter_, 60);
+        nh.param("nanogicp/ransac_max_iter", ng_ransac_max_iter_, 5);
+        nh.param("nanogicp/max_corr_dist", ng_max_corr_dist_, 1.0);
+        nh.param("nanogicp/icp_score_thr", ng_icp_score_thr_, 10.0);
+        nh.param("nanogicp/trans_eps", ng_trans_eps_, 1e-3);
+        nh.param("nanogicp/euclid_fit_eps", ng_euclid_fit_eps_, 1e-3);
+        nh.param("nanogicp/ransac_outlier_thr", ng_ransac_outlier_thr_, 1.0);
+
+        // 新增：时序配准参数
+        nh.param("temporal_registration/enable", use_temporal_registration_, true);
+        nh.param("temporal_registration/max_dt", temporal_max_dt_, 0.3);
+
+        // 配置 NanoGICP 参数
+        nano_gicp_.setNumThreads(ng_threads_);
+        nano_gicp_.setCorrespondenceRandomness(ng_corr_rand_);
+        nano_gicp_.setMaximumIterations(ng_max_iter_);
+        nano_gicp_.setRANSACIterations(ng_ransac_max_iter_);
+        nano_gicp_.setMaxCorrespondenceDistance(ng_max_corr_dist_);
+        nano_gicp_.setTransformationEpsilon(ng_trans_eps_);
+        nano_gicp_.setEuclideanFitnessEpsilon(ng_euclid_fit_eps_);
+        nano_gicp_.setRANSACOutlierRejectionThreshold(ng_ransac_outlier_thr_);
+
+        ROS_INFO("Temporal registration: %s, max_dt=%.2fs",
+                 use_temporal_registration_ ? "ON" : "OFF", temporal_max_dt_);
     }
 
     void Radar_vision::initializeGtsam() {
@@ -244,41 +285,60 @@ namespace radar_vision {
 
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
         pcl::fromROSMsg(*msg, *cloud);
-        if (cloud->empty()) {
-            ROS_WARN("Received empty point cloud!");
-            return;
-        }
+        if (cloud->empty()) return;
 
-        geometry_msgs::Point search_center;
+        geometry_msgs::Point center_map;
         {
             std::lock_guard<std::mutex> lock(target_mutex_);
-            search_center = current_target_position_;
-            search_center.x += pending_x_offset_;
-            search_center.y += pending_y_offset_;
-            search_center.z += pending_z_offset_;
+            center_map = current_target_position_;
+            center_map.x += pending_x_offset_;
+            center_map.y += pending_y_offset_;
+            center_map.z += pending_z_offset_;
         }
 
-        geometry_msgs::Point refined_target = calculateAverageTargetFromPointCloud(cloud, search_center, search_radius_);
+        geometry_msgs::Point refined_map =
+            refineTargetWithDBSCANAndNanoGICP(cloud, msg->header.frame_id, center_map, msg->header.stamp);
 
-        if (!std::isnan(refined_target.x) && !std::isnan(refined_target.y) && !std::isnan(refined_target.z)) {
-
-            // 先本地保存点（用于回显）
+        if (!std::isnan(refined_map.x)) {
             {
-                std::lock_guard<std::mutex> lock(target_mutex_);
-                current_target_position_ = refined_target;
-                pending_x_offset_ = pending_y_offset_ = pending_z_offset_ = 0.0;
-                pointcloud_received_ = true;
+            std::lock_guard<std::mutex> lock(target_mutex_);
+            current_target_position_ = refined_map;
+            pending_x_offset_ = pending_y_offset_ = pending_z_offset_ = 0.0;
+            pointcloud_received_ = true;
             }
+            if (use_gtsam_optimization_) addPointMeasurementToGtsam(refined_map, msg->header.stamp);
+            ROS_INFO_THROTTLE(2.0, "Refined (DBSCAN+NanoGICP): [%.3f, %.3f, %.3f] -> [%.3f, %.3f, %.3f]",
+                            center_map.x, center_map.y, center_map.z,
+                            refined_map.x, refined_map.y, refined_map.z);
+        }
+        radar_vision::TrackData track;
+        track.header.stamp = msg->header.stamp;
+        track.header.frame_id = "odom";
+        track.id = targetid;
+        track.tracking = true;
+        track.armors_num = 1;
+        track.position.x = refined_map.x;
+        track.position.y = refined_map.y;
+        track.position.z = refined_map.z;
+        pub_.publish(track);
 
-            // 加入GTSAM优化
-            if (use_gtsam_optimization_) {
-                addPointMeasurementToGtsam(refined_target, msg->header.stamp);
-            }
-
-            ROS_INFO_THROTTLE(2.0, "Target refined by pointcloud: [%.3f, %.3f, %.3f] -> [%.3f, %.3f, %.3f]",
-                            search_center.x, search_center.y, search_center.z,
-                            refined_target.x, refined_target.y, refined_target.z);
-            ROS_INFO_THROTTLE(5.0, "Manual offsets cleared after successful pointcloud refinement");
+        // 可选：发布 marker（map 帧）
+        if (target_marker_pub_.getNumSubscribers() > 0) {
+            visualization_msgs::Marker m;
+            m.header.stamp = msg->header.stamp;
+            m.header.frame_id = "odom";
+            m.ns = "radar_vision";
+            m.id = 0;
+            m.type = visualization_msgs::Marker::SPHERE;
+            m.action = visualization_msgs::Marker::ADD;
+            m.pose.position.x = refined_map.x;
+            m.pose.position.y = refined_map.y;
+            m.pose.position.z = refined_map.z;
+            m.pose.orientation.w = 1.0;
+            m.scale.x = m.scale.y = m.scale.z = 0.3;
+            m.color.r = 1.0; m.color.g = 0.4; m.color.b = 0.1; m.color.a = 0.9;
+            m.lifetime = ros::Duration(0.0);
+            target_marker_pub_.publish(m);
         }
     }
 
@@ -392,90 +452,148 @@ namespace radar_vision {
         }
     }
 
-    void Radar_vision::tfCallback(const tf2_msgs::TFMessage::ConstPtr& msg) {
-        for (const auto& transform : msg->transforms) {
-            if (transform.child_frame_id == "odom" && transform.header.frame_id == "map") {
-                ros::Time timestamp = transform.header.stamp;
-                try {
-                    geometry_msgs::TransformStamped odom_transform =
-                        tf_buffer_.lookupTransform("odom", "map", timestamp, ros::Duration(1));
+    geometry_msgs::Point Radar_vision::refineTargetWithDBSCANAndNanoGICP(
+        const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
+        const std::string& /*cloud_frame*/,
+        const geometry_msgs::Point& center_map,
+        const ros::Time& stamp) {
 
-                    geometry_msgs::PoseStamped target_to_transform;
-                    // 优先使用GTSAM估计
-                    bool use_gtsam_point = false;
-                    geometry_msgs::Point gtsam_point;
-                    {
-                        std::lock_guard<std::mutex> gtsam_lk(gtsam_mutex_);
-                        if (use_gtsam_optimization_ && gtsam_has_estimate_) {
-                            gtsam_point = gtsam_estimated_point_;
-                            use_gtsam_point = true;
-                        }
-                    }
+        geometry_msgs::Point nanp;
+        nanp.x = nanp.y = nanp.z = std::numeric_limits<double>::quiet_NaN();
+        if (!cloud || cloud->empty()) return nanp;
 
-                    if (use_gtsam_point) {
-                        target_to_transform.pose.position = gtsam_point;
-                    } else {
-                        std::lock_guard<std::mutex> lock(target_mutex_);
-                        if (use_pointcloud_refinement_ && pointcloud_received_) {
-                            target_to_transform.pose.position = current_target_position_;
-                        } else {
-                            target_to_transform.pose.position.x = map2target.pose.position.x + pending_x_offset_;
-                            target_to_transform.pose.position.y = map2target.pose.position.y + pending_y_offset_;
-                            target_to_transform.pose.position.z = map2target.pose.position.z + pending_z_offset_;
-                        }
-                    }
-                    target_to_transform.pose.orientation.w = 1.0;
+        // 假定 cloud 与 center_map 在同一坐标系（map），不做 TF 变换
+        pcl::PointCloud<pcl::PointXYZ>::Ptr roi(new pcl::PointCloud<pcl::PointXYZ>);
+        pcl::CropBox<pcl::PointXYZ> crop;
+        crop.setInputCloud(cloud);
+        const float r = static_cast<float>(roi_radius_);
+        Eigen::Vector4f minb(center_map.x - r, center_map.y - r, center_map.z - r, 1.0f);
+        Eigen::Vector4f maxb(center_map.x + r, center_map.y + r, center_map.z + r, 1.0f);
+        crop.setMin(minb);
+        crop.setMax(maxb);
+        crop.filter(*roi);
+        if (roi->empty()) return nanp;
 
-                    tf2::doTransform(target_to_transform.pose, odom2target.pose, odom_transform);
+        pcl::PointCloud<pcl::PointXYZ>::Ptr clean(new pcl::PointCloud<pcl::PointXYZ>);
+        if (use_sor_) {
+            pcl::StatisticalOutlierRemoval<pcl::PointXYZ> sor;
+            sor.setInputCloud(roi);
+            sor.setMeanK(sor_mean_k_);
+            sor.setStddevMulThresh(sor_stddev_mul_);
+            sor.filter(*clean);
+        } else {
+            clean = roi;
+        }
 
-                    geometry_msgs::TransformStamped odom_target_tf;
-                    odom_target_tf.header.stamp = timestamp;
-                    odom_target_tf.header.frame_id = "odom";
-                    odom_target_tf.child_frame_id = "target";
-                    odom_target_tf.transform.translation.x = odom2target.pose.position.x;
-                    odom_target_tf.transform.translation.y = odom2target.pose.position.y;
-                    odom_target_tf.transform.translation.z = odom2target.pose.position.z;
-                    odom_target_tf.transform.rotation = tf2::toMsg(tf2::Quaternion(0, 0, 0, 1));
-                    tf_broadcaster.sendTransform(odom_target_tf);
+        pcl::PointCloud<pcl::PointXYZ>::Ptr roids(new pcl::PointCloud<pcl::PointXYZ>);
+        pcl::VoxelGrid<pcl::PointXYZ> vox;
+        vox.setInputCloud(clean);
+        vox.setLeafSize(voxel_leaf_, voxel_leaf_, voxel_leaf_);
+        vox.filter(*roids);
+        if (roids->empty()) return nanp;
 
-                    geometry_msgs::TransformStamped base_link_tf =
-                            tf_buffer_.lookupTransform("base_link", "target", timestamp, ros::Duration(1));
+        ROS_INFO("[DBSCAN] input: roi=%zu, after_sor=%zu, after_voxel=%zu, eps=%.3f, min_pts=%d, size_range=[%d,%d]",
+         roi->size(), clean->size(), roids->size(),
+         dbscan_eps_, dbscan_min_pts_, cluster_min_size_, cluster_max_size_);
 
-                tf2::Vector3 xy_position(
-                        base_link_tf.transform.translation.x,
-                        base_link_tf.transform.translation.y,
-                        0.0
-                );
-                double xy_distance = xy_position.length();
-                tf2::Vector3 z_position(
-                        0.0,
-                        0.0,
-                        base_link_tf.transform.translation.z
-                );
-                double z_distance = z_position.length();
-                std_msgs::Float32 xyDistanceMsg;
-                xyDistanceMsg.data = xy_distance;
-                dis_pub_.publish(xyDistanceMsg);
-                std_msgs::Float32 zDistanceMsg;
-                zDistanceMsg.data = z_distance;
-                z_dis_pub_.publish(zDistanceMsg);
+        // DBSCAN
+        std::vector<std::vector<int>> clusters_idx;
+        if (!simple_dbscan::dbscan<pcl::PointXYZ>(roids, clusters_idx, dbscan_eps_, dbscan_min_pts_)) {
+            ROS_WARN_THROTTLE(5.0, "DBSCAN found 0 cluster in ROI");
+            return nanp;
+        }
 
-                    radar_vision::TrackData trackDataMsg;
-                    trackDataMsg.header.stamp = timestamp;
-                    trackDataMsg.id = targetid;
-                    trackDataMsg.tracking = true;
-                    trackDataMsg.armors_num = 1;
-                    trackDataMsg.header.frame_id = "odom";
-                    trackDataMsg.position.x = odom2target.pose.position.x;
-                    trackDataMsg.position.y = odom2target.pose.position.y;
-                    trackDataMsg.position.z = odom2target.pose.position.z;
-                    pub_.publish(trackDataMsg);
-                }
-                catch (tf2::TransformException& ex) {
-                    ROS_WARN("%s", ex.what());
+        const int max_print = 3;
+        ROS_INFO("[DBSCAN] clusters=%zu", clusters_idx.size());
+        for (size_t ci = 0; ci < clusters_idx.size() && ci < (size_t)max_print; ++ci) {
+            const auto& idxs = clusters_idx[ci];
+            Eigen::Vector4f c; pcl::compute3DCentroid(*roids, idxs, c);
+            ROS_INFO("[DBSCAN]  - c%zu: size=%zu, centroid=[%.3f, %.3f, %.3f]",
+                    ci, idxs.size(), c[0], c[1], c[2]);
+        }
+
+        // 选最靠近 center_map 的簇
+        pcl::PointCloud<pcl::PointXYZ>::Ptr best_cluster(new pcl::PointCloud<pcl::PointXYZ>);
+        Eigen::Vector4f best_centroid(0,0,0,0);
+        double best_d2 = std::numeric_limits<double>::infinity();
+        const Eigen::Vector3f c0(center_map.x, center_map.y, center_map.z);
+
+        for (const auto& idxs : clusters_idx) {
+            if ((int)idxs.size() < cluster_min_size_ || (int)idxs.size() > cluster_max_size_) continue;
+            Eigen::Vector4f c; pcl::compute3DCentroid(*roids, idxs, c);
+            double d2 = (c.head<3>() - c0).squaredNorm();
+            if (d2 < best_d2) {
+                best_d2 = d2; best_centroid = c;
+                best_cluster->clear(); best_cluster->reserve(idxs.size());
+                for (int i : idxs) best_cluster->push_back((*roids)[i]);
+            }
+        }
+        if (best_cluster->empty()) return nanp;
+
+        // 当前簇质心（map 下）
+        Eigen::Vector3f refined_c = best_centroid.head<3>();
+
+        // 可选：基于上一帧的时序配准（仍在同一坐标系，无需 TF）
+        pcl::PointCloud<pcl::PointXYZ> aligned;
+        bool use_aligned_for_vis = false;
+        if (use_temporal_registration_) {
+            pcl::PointCloud<pcl::PointXYZ>::Ptr prev;
+            ros::Time prev_stamp;
+            std::string prev_frame; // 不再使用
+
+            {
+                std::lock_guard<std::mutex> lk(last_cluster_mutex_);
+                prev = last_cluster_;
+                prev_stamp = last_cluster_stamp_;
+                prev_frame = last_cluster_frame_;
+            }
+
+            if (prev && !prev->empty() &&
+                std::fabs((stamp - prev_stamp).toSec()) <= temporal_max_dt_) {
+
+                Eigen::Vector4f lastC4; pcl::compute3DCentroid(*prev, lastC4);
+                const Eigen::Vector3f lastC = lastC4.head<3>();
+
+                nano_gicp_.setInputSource(best_cluster);
+                nano_gicp_.calculateSourceCovariances();
+                nano_gicp_.setInputTarget(prev);
+                nano_gicp_.calculateTargetCovariances();
+
+                Eigen::Matrix4f guess = Eigen::Matrix4f::Identity();
+                guess.block<3,1>(0,3) = lastC - refined_c;
+
+                nano_gicp_.align(aligned, guess);
+                const double score = nano_gicp_.getFitnessScore();
+
+                if (nano_gicp_.hasConverged() && score < ng_icp_score_thr_) {
+                    const Eigen::Matrix4f T = nano_gicp_.getFinalTransformation();
+                    refined_c = T.block<3,3>(0,0) * refined_c + T.block<3,1>(0,3);
+                    use_aligned_for_vis = true;
+                    ROS_DEBUG("Temporal NanoGICP ok, score=%.6f", score);
+                } else {
+                    ROS_WARN_THROTTLE(5.0, "Temporal NanoGICP not converged or bad score=%.6f, use centroid", score);
                 }
             }
         }
+
+        pcl::PointCloud<pcl::PointXYZ>::Ptr cluster_vis = best_cluster;
+        if (use_aligned_for_vis) {
+            cluster_vis.reset(new pcl::PointCloud<pcl::PointXYZ>(aligned));
+        }
+
+        if (best_cluster_pub_.getNumSubscribers() > 0) {
+            sensor_msgs::PointCloud2 cluster_msg;
+            pcl::toROSMsg(*cluster_vis, cluster_msg);
+            cluster_msg.header.frame_id = "map";  // 固定在 map
+            cluster_msg.header.stamp = stamp;
+            best_cluster_pub_.publish(cluster_msg);
+        }
+
+        // 直接返回 map 坐标（不再做 TF 变换）
+        geometry_msgs::Point out;
+        out.x = refined_c.x(); out.y = refined_c.y(); out.z = refined_c.z();
+        return out;
     }
+
 
 } // namespace radar_vision

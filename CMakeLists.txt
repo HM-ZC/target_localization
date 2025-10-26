@@ -89,6 +89,20 @@ project(radar_vision)
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
+
+set(CMAKE_BUILD_TYPE "Release")
+set(CMAKE_CXX_FLAGS "-std=c++14 -pthread -fexceptions -g -ggdb")
+set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
+include(FindOpenMP)
+if(OPENMP_FOUND)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
+else(OPENMP_FOUND)
+    message("ERROR: OpenMP could not be found.")
+endif(OPENMP_FOUND)
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -Wextra ${CMAKE_CXX_FLAGS}")
+
 find_package(catkin REQUIRED COMPONENTS
         dynamic_reconfigure
         #rm_common
@@ -107,9 +121,9 @@ find_package(catkin REQUIRED COMPONENTS
         pcl_ros
         pcl_conversions
         sensor_msgs
+        nano_gicp
 )
 find_package(GTSAM REQUIRED)
-
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
 
@@ -204,7 +218,7 @@ generate_dynamic_reconfigure_options(
 catkin_package(
         INCLUDE_DIRS include
         LIBRARIES radar_vision
-        CATKIN_DEPENDS dynamic_reconfigure rm_common rm_msgs roscpp tf2_eigen tf2_ros visualization_msgs tf2_geometry_msgs message_runtime pcl_ros pcl_conversions sensor_msgs
+        CATKIN_DEPENDS dynamic_reconfigure rm_common rm_msgs roscpp tf2_eigen tf2_ros visualization_msgs tf2_geometry_msgs message_runtime pcl_ros pcl_conversions sensor_msgs nano_gicp
         DEPENDS system_lib PCL
 )
 
